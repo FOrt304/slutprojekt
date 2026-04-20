@@ -63,8 +63,8 @@ BACKGROUND_COLOR = BLACK
 
 class Enemy:
     def __init__(self, x, y, name):
-        self.x = 100
-        self.y = 150
+        self.x = x
+        self.y = y
         self.width = 40
         self.height = 40
         self.hp = 15
@@ -74,6 +74,24 @@ class Enemy:
 
     def draw(self, screen):
         pygame.draw.rect(screen, RED, (self.x, self.y, self.width, self.height))
+
+
+def spawn_enemy_random(name="Dummy"):
+    """Spawn a new enemy at a random free location on the exploration map."""
+    attempts = 0
+    while attempts < 50:
+        x = random.randint(60, SCREEN_WIDTH - 100)
+        y = random.randint(60, SCREEN_HEIGHT - 100)
+        enemy_rect = pygame.Rect(x, y, 40, 40)
+        collision = False
+        for wall in walls:
+            if enemy_rect.colliderect(wall):
+                collision = True
+                break
+        if not collision:
+            return Enemy(x, y, name)
+        attempts += 1
+    return Enemy(100, 150, name)
 
 # Data definitions
 pygame.init()
@@ -88,8 +106,8 @@ action_quit = False
 clock = pygame.time.Clock()
 enemies = [Enemy(200, 150, "Dummy")] # List of enemies
 font = pygame.font.Font(None, 24) # UI text Font
-message = ""
-state_label = f":3" # Label for bottom-right corner {game_state['state'].name}
+message = "Welcome to adventures of Fort Yukon!" # Message to display in UI
+#state_label = f":3" # Label for bottom-right corner
 projectiles = []
 player_turn = False
 enemy_turn = True
@@ -98,7 +116,15 @@ inventory = []
 items = {
     "healing_potion": {"name": "Healing Potion", "effect": lambda: None},  # will define
 }
-state_label = f":3" # Label for bottom-right corner {game_state['state'].name}
+enemy_attack_delay = 0  # Frames until enemy attacks (60 fps = 60 frames for 1 second)
+enemy_attack_max_delay = 60  # 1 second at 60 FPS
+
+# Aiming system variables (Deltarune-style)
+aim_active = False
+aim_position = 0
+aim_target_zone_start = 35  # Green zone start in aim bar (pixels from left)
+aim_target_zone_end = 65    # Green zone end in aim bar (pixels from left)
+aim_speed = 3  # pixels per frame
 # Walls for game world (x, y, width, height)
 walls = [
     pygame.Rect(0, 0, SCREEN_WIDTH, 50),  # Top wall
@@ -129,12 +155,19 @@ def move_rectangle():
     # 1 below represents the speed of the object
     game_state["rec_x"] += game_state["rec_dir"]*REC["SPEED"]
 
-def change_rec_dir():
-    """Change direction of rectangle when outside game window"""
-    if game_state["rec_x"] >= SCREEN_WIDTH - REC["WIDTH"]:
-        game_state["rec_dir"] = -1
-    elif game_state["rec_x"] <= 0:
-        game_state["rec_dir"] = 1
+def change_rec_dir(current=None, limit=None):
+    """Change direction of rectangle or aiming cursor when outside bounds"""
+    global aim_speed
+    if current is None:
+        if game_state["rec_x"] >= SCREEN_WIDTH - REC["WIDTH"]:
+            game_state["rec_dir"] = -1
+        elif game_state["rec_x"] <= 0:
+            game_state["rec_dir"] = 1
+    else:
+        if current >= limit:
+            aim_speed = -abs(aim_speed)
+        elif current <= 0:
+            aim_speed = abs(aim_speed)
 
 def draw_start_game_button():
     """Draws the start game button in menu"""
@@ -249,27 +282,211 @@ def check_collision(obj1, obj2):
             obj1.y < obj2.y + obj2.height and
             obj1.y + obj1.height > obj2.y)
 
+# ============= PROJECTILE PATTERN FUNCTIONS =============
+def spawn_circle_pattern():
+    """Classic circle pattern - projectiles spread out in all directions"""
+    ex = BORDER["X"] + BORDER["WIDTH"] // 2
+    ey = BORDER["Y"] + BORDER["HEIGHT"] // 2
+    num_proj = int(8 + difficulty * 2)
+    speed = 3 + difficulty * 0.5
+    for i in range(num_proj):
+        angle = i * (2 * math.pi / num_proj)
+        proj_dx = math.cos(angle) * speed
+        proj_dy = math.sin(angle) * speed
+        projectiles.append({"x": ex, "y": ey, "dx": proj_dx, "dy": proj_dy, "speed": speed, "damage": 3})
+
+def spawn_spiral_pattern():
+    """Spiral pattern - projectiles move in a spiral"""
+    ex = BORDER["X"] + BORDER["WIDTH"] // 2
+    ey = BORDER["Y"] + BORDER["HEIGHT"] // 2
+    num_proj = int(6 + difficulty)
+    speed = 2.5 + difficulty * 0.3
+    for i in range(num_proj):
+        angle = i * (2 * math.pi / num_proj)
+        # Add rotation component for spiral effect
+        proj_dx = math.cos(angle) * speed + random.uniform(-0.5, 0.5)
+        proj_dy = math.sin(angle) * speed + random.uniform(-0.5, 0.5)
+        projectiles.append({"x": ex, "y": ey, "dx": proj_dx, "dy": proj_dy, "speed": speed, "damage": 3, "rotation": 0})
+
+def spawn_line_pattern():
+    """Line pattern - projectiles come in organized rows"""
+    ex = BORDER["X"] + BORDER["WIDTH"] // 2
+    ey = BORDER["Y"] + BORDER["HEIGHT"] // 2
+    speed = 3 + difficulty * 0.4
+    num_rows = int(3 + difficulty // 2)
+    for row in range(num_rows):
+        for col in range(4):
+            angle = random.uniform(0, 2 * math.pi)
+            offset_x = (col - 1.5) * 20
+            offset_y = (row - 1) * 20
+            proj_dx = math.cos(angle) * speed * 0.8
+            proj_dy = math.sin(angle) * speed * 0.8
+            projectiles.append({"x": ex + offset_x, "y": ey + offset_y, "dx": proj_dx, "dy": proj_dy, 
+                              "speed": speed, "damage": 3, "offset_x": offset_x, "offset_y": offset_y})
+
+def spawn_wave_pattern():
+    """Wave pattern - projectiles come in waves from edges"""
+    speed = 3.5 + difficulty * 0.5
+    sides = random.randint(2, 4)  # Come from 2-4 sides
+    
+    if sides >= 1:  # From top
+        for i in range(int(5 + difficulty)):
+            x = BORDER["X"] + (i * BORDER["WIDTH"] // (5 + difficulty))
+            y = BORDER["Y"]
+            projectiles.append({"x": x, "y": y, "dx": random.uniform(-0.5, 0.5), "dy": speed, 
+                              "speed": speed, "damage": 3})
+    if sides >= 2:  # From left
+        for i in range(int(5 + difficulty)):
+            x = BORDER["X"]
+            y = BORDER["Y"] + (i * BORDER["HEIGHT"] // (5 + difficulty))
+            projectiles.append({"x": x, "y": y, "dx": speed, "dy": random.uniform(-0.5, 0.5), 
+                              "speed": speed, "damage": 3})
+    if sides >= 3:  # From right
+        for i in range(int(5 + difficulty)):
+            x = BORDER["X"] + BORDER["WIDTH"]
+            y = BORDER["Y"] + (i * BORDER["HEIGHT"] // (5 + difficulty))
+            projectiles.append({"x": x, "y": y, "dx": -speed, "dy": random.uniform(-0.5, 0.5), 
+                              "speed": speed, "damage": 3})
+    if sides >= 4:  # From bottom
+        for i in range(int(5 + difficulty)):
+            x = BORDER["X"] + (i * BORDER["WIDTH"] // (5 + difficulty))
+            y = BORDER["Y"] + BORDER["HEIGHT"]
+            projectiles.append({"x": x, "y": y, "dx": random.uniform(-0.5, 0.5), "dy": -speed, 
+                              "speed": speed, "damage": 3})
+
+def spawn_aimed_pattern():
+    """Aimed pattern - projectiles aim at player position"""
+    ex = BORDER["X"] + BORDER["WIDTH"] // 2
+    ey = BORDER["Y"] + BORDER["HEIGHT"] // 2
+    px = PLAYER["X"] + PLAYER["WIDTH"] // 2
+    py = PLAYER["Y"] + PLAYER["HEIGHT"] // 2
+    
+    num_proj = int(5 + difficulty)
+    speed = 3 + difficulty * 0.4
+    
+    for i in range(num_proj):
+        # Add some spread to not be too accurate
+        spread = random.uniform(-0.3, 0.3)
+        dx = (px - ex) + spread * 50
+        dy = (py - ey) + spread * 50
+        distance = math.sqrt(dx*dx + dy*dy)
+        if distance > 0:
+            dx = (dx / distance) * speed
+            dy = (dy / distance) * speed
+        projectiles.append({"x": ex, "y": ey, "dx": dx, "dy": dy, "speed": speed, "damage": 4})
+
+def spawn_random_pattern():
+    """Chaotic pattern - random projectiles from random positions"""
+    speed = 3 + difficulty * 0.3
+    num_proj = int(10 + difficulty * 2)
+    
+    for i in range(num_proj):
+        x = random.uniform(BORDER["X"], BORDER["X"] + BORDER["WIDTH"])
+        y = random.uniform(BORDER["Y"], BORDER["Y"] + BORDER["HEIGHT"])
+        angle = random.uniform(0, 2 * math.pi)
+        proj_dx = math.cos(angle) * speed
+        proj_dy = math.sin(angle) * speed
+        projectiles.append({"x": x, "y": y, "dx": proj_dx, "dy": proj_dy, "speed": speed, "damage": 2})
+
+# ============= AIM SYSTEM FUNCTIONS =============
+def start_aiming():
+    """Start the aiming minigame"""
+    global aim_active, aim_position
+    aim_active = True
+    aim_position = 0
+
+def draw_aim_bar(screen):
+    """Draw the Deltarune-style aiming bar"""
+    bar_width = 100
+    bar_height = 20
+    bar_x = (SCREEN_WIDTH - bar_width) // 2
+    bar_y = BORDER["Y"] - bar_height - 15
+    
+    # Draw background
+    pygame.draw.rect(screen, DARK_GRAY, (bar_x, bar_y, bar_width, bar_height))
+    pygame.draw.rect(screen, WHITE, (bar_x, bar_y, bar_width, bar_height), 2)
+    
+    # Draw target zone (green zone)
+    zone_width = aim_target_zone_end - aim_target_zone_start
+    pygame.draw.rect(screen, GREEN, (bar_x + aim_target_zone_start, bar_y + 2, zone_width, bar_height - 4))
+    
+    # Draw cursor
+    cursor_x = bar_x + aim_position
+    pygame.draw.rect(screen, YELLOW, (cursor_x - 2, bar_y - 5, 4, bar_height + 10), 0)
+    
+    return bar_x, bar_y, bar_width, bar_height
+
+def update_aim():
+    """Update aim position (moves back and forth)"""
+    global aim_position
+    aim_position += aim_speed
+    
+    # Bounce back and forth using the same side-to-side logic as the rectangle
+    change_rec_dir(current=aim_position, limit=100)
+    if aim_position >= 100:
+        aim_position = 100
+    elif aim_position <= 0:
+        aim_position = 0
+
+def check_aim_accuracy():
+    """Check where the cursor is and return damage multiplier"""
+    center = 50
+    distance = abs(aim_position - center)
+    max_distance = center
+    normalized = max(0.0, 1.0 - distance / max_distance)
+    multiplier = 0.8 + normalized * 1.2
+    
+    if distance <= 5:
+        accuracy = "CRITICAL HIT!"
+    elif distance <= 15:
+        accuracy = "Great hit!"
+    elif distance <= 30:
+        accuracy = "Good hit!"
+    else:
+        accuracy = "Off target..."
+    
+    return multiplier, accuracy
+
+def check_collision(obj1, obj2):
+    return (obj1.x < obj2.x + obj2.width and
+            obj1.x + obj1.width > obj2.x and
+            obj1.y < obj2.y + obj2.height and
+            obj1.y + obj1.height > obj2.y)
+
 def player_attack():
-    global message, enemy_turn, player_turn
+    global message, enemy_turn, player_turn, aim_active
     if enemies:
-        damage = PLAYER["ATTACK"] + random.randint(-2, 2)
+        # Start aiming minigame
+        aim_active = True
+        start_aiming()
+        player_turn = False  # Aiming phase
+
+def finish_player_attack(damage_multiplier, accuracy_text):
+    """Complete the attack after aiming"""
+    global message, enemy_turn, player_turn, aim_active, difficulty, enemy_attack_delay
+    aim_active = False
+    
+    if enemies:
+        base_damage = PLAYER["ATTACK"]
+        damage = int(base_damage * damage_multiplier) + random.randint(-1, 1)
         enemies[0].hp -= damage
-        message = f"Dealt {damage} damage!"
+        message = f"{accuracy_text} {damage} damage!"
         
         if enemies[0].hp <= 0:
             message = f"Defeated {enemies[0].name}!"
             enemies.pop(0)
-            # Spawn new enemy
-            enemies.append(Enemy(100, 150, "Dummy"))
-            # Give random item
+            # Spawn new enemy at a random map location and return to exploration
+            enemies.append(spawn_enemy_random())
             if random.random() < 0.5:  # 50% chance
                 inventory.append("healing_potion")
                 message += " Got a Healing Potion!"
-            player_turn = True  # stay in battle
+            game_state["state"] = EXPLORATION
+            player_turn = False
             enemy_turn = False
         else:
             enemy_turn = True
             player_turn = False
+            enemy_attack_delay = enemy_attack_max_delay  # Start delay before enemy attacks
 
 def enemy_attack():
     global message
@@ -283,7 +500,7 @@ def enemy_attack():
 
 def update():
     """Updates game state"""
-    global enemy_turn, player_turn, difficulty
+    global enemy_turn, player_turn, difficulty, enemy_attack_delay
     if game_state["state"] == EXPLORATION:
         old_x, old_y = PLAYER["X"], PLAYER["Y"]
         keys = pygame.key.get_pressed()
@@ -331,24 +548,35 @@ def update():
         PLAYER["X"] = max(BORDER["X"], min(PLAYER["X"], BORDER["X"] + BORDER["WIDTH"] - PLAYER["WIDTH"]))
         PLAYER["Y"] = max(BORDER["Y"], min(PLAYER["Y"], BORDER["Y"] + BORDER["HEIGHT"] - PLAYER["HEIGHT"]))
         
+        # Update aiming cursor whenever aiming is active
+        if aim_active:
+            update_aim()
+
         if enemy_turn:
-            if enemies and len(projectiles) == 0:
+            if enemy_attack_delay > 0:
+                # Count down before enemy attacks
+                enemy_attack_delay -= 1
+            elif enemies and len(projectiles) == 0:
                 # Spawn sequence of projectiles from center of border
-                ex = BORDER["X"] + BORDER["WIDTH"] // 2
-                ey = BORDER["Y"] + BORDER["HEIGHT"] // 2
-                px = PLAYER["X"] + PLAYER["WIDTH"] // 2
-                py = PLAYER["Y"] + PLAYER["HEIGHT"] // 2
-                # Spawn 8 projectiles in circle
-                num_proj = 8 + difficulty * 2
-                speed = 3 + difficulty * 0.5
-                for i in range(num_proj):
-                    angle = i * (2 * math.pi / num_proj)
-                    proj_dx = math.cos(angle) * speed
-                    proj_dy = math.sin(angle) * speed
-                    projectiles.append({"x": ex, "y": ey, "dx": proj_dx, "dy": proj_dy, "speed": speed, "damage": 3})
+                # Choose random pattern
+                pattern = random.randint(1, 6)
+                
+                if pattern == 1:
+                    spawn_circle_pattern()
+                elif pattern == 2:
+                    spawn_spiral_pattern()
+                elif pattern == 3:
+                    spawn_line_pattern()
+                elif pattern == 4:
+                    spawn_wave_pattern()
+                elif pattern == 5:
+                    spawn_aimed_pattern()
+                else:
+                    spawn_random_pattern()
+                
                 enemy_turn = False
                 player_turn = True
-                difficulty += 1  # Increase difficulty
+                difficulty += 0.5  # Increase difficulty gradually
             elif len(projectiles) > 0:
                 # Move projectiles
                 for proj in projectiles[:]:
@@ -370,8 +598,10 @@ def update():
                     enemy_turn = False
                     player_turn = True
         elif player_turn:
-            # Player chooses action
-            pass
+            # Player can attack or aim
+            if not aim_active:
+                # Waiting for player input (handled in main.py)
+                pass
 
 def draw_menu():
     """Displays the menu and waits for the player to start the game"""
@@ -429,10 +659,18 @@ def draw():
         screen.fill(BACKGROUND_COLOR)
         # Draw battle arena
         draw_border()
-        draw_buttons()
-        # Draw projectiles
+        
+        # Draw projectiles (visible during aiming and normal turns)
         for proj in projectiles:
             pygame.draw.circle(screen, WHITE, (int(proj["x"]), int(proj["y"])), 5)
+        
+        # Draw aiming minigame if active
+        if aim_active:
+            draw_aim_bar(screen)
+            aim_text = font.render("Click to hit!", True, YELLOW)
+            screen.blit(aim_text, (SCREEN_WIDTH // 2 - 50, SCREEN_HEIGHT // 2 + 30))
+        else:
+            draw_buttons()
 
     draw_player()
     
@@ -454,8 +692,8 @@ def draw():
     
     
     # Bottom-right label
-    label_text = font.render(state_label, True, WHITE)
-    screen.blit(label_text, (SCREEN_WIDTH - 30, SCREEN_HEIGHT - 30)) # 150
+#    label_text = font.render(state_label, True, WHITE)
+#    screen.blit(label_text, (SCREEN_WIDTH - 30, SCREEN_HEIGHT - 30)) # 150
     
     pygame.display.flip()
 
