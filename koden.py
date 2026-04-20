@@ -1,6 +1,8 @@
 import pygame
 import random
 import math
+import json
+import os
 # importer lägger vi i början!
 from pygame.locals import (
     QUIT,
@@ -93,7 +95,61 @@ def spawn_enemy_random(name="Dummy"):
         attempts += 1
     return Enemy(100, 150, name)
 
-# Data definitions
+# ============= SAVE/LOAD SYSTEM =============
+def save_game():
+    """Save current game state to JSON"""
+    save_data = {
+        "player_name": PLAYER["NAME"],
+        "player_hp": PLAYER["HP"],
+        "enemies_defeated": enemies_defeated,
+        "difficulty": difficulty,
+    }
+    with open(save_file, "w") as f:
+        json.dump(save_data, f)
+
+def load_game():
+    """Load game state from JSON"""
+    global enemies_defeated, difficulty
+    if os.path.exists(save_file):
+        try:
+            with open(save_file, "r") as f:
+                save_data = json.load(f)
+                PLAYER["NAME"] = save_data.get("player_name", "Player")
+                PLAYER["HP"] = save_data.get("player_hp", PLAYER["MAX_HP"])
+                enemies_defeated = save_data.get("enemies_defeated", 0)
+                difficulty = save_data.get("difficulty", 1)
+            return True
+        except:
+            return False
+    return False
+
+def save_to_leaderboard(score):
+    """Save score to leaderboard"""
+    leaderboard = []
+    if os.path.exists(leaderboard_file):
+        try:
+            with open(leaderboard_file, "r") as f:
+                leaderboard = json.load(f)
+        except:
+            leaderboard = []
+    
+    leaderboard.append({"username": PLAYER["NAME"], "enemies_defeated": score, "difficulty": difficulty})
+    leaderboard.sort(key=lambda x: x["enemies_defeated"], reverse=True)
+    leaderboard = leaderboard[:10]  # Keep top 10
+    
+    with open(leaderboard_file, "w") as f:
+        json.dump(leaderboard, f)
+
+def load_leaderboard():
+    """Load leaderboard from JSON"""
+    if os.path.exists(leaderboard_file):
+        try:
+            with open(leaderboard_file, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
 pygame.init()
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 pygame.display.set_caption("Adventures of Fort Yukon") # Game window title
@@ -118,6 +174,10 @@ items = {
 }
 enemy_attack_delay = 0  # Frames until enemy attacks (60 fps = 60 frames for 1 second)
 enemy_attack_max_delay = 60  # 1 second at 60 FPS
+enemies_defeated = 0  # Counter for total enemies defeated
+save_file = "savegame.json"  # Save file name
+leaderboard_file = "leaderboard.json"  # Leaderboard file
+input_active = False  # Whether username input is active
 
 # Aiming system variables (Deltarune-style)
 aim_active = False
@@ -170,16 +230,72 @@ def change_rec_dir(current=None, limit=None):
             aim_speed = abs(aim_speed)
 
 def draw_start_game_button():
-    """Draws the start game button in menu"""
-    button_width = 200
-    button_height = 50
-    button_x = (SCREEN_WIDTH - button_width) // 2
-    button_y = (SCREEN_HEIGHT - button_height) // 2
-    pygame.draw.rect(screen, WHITE, (button_x, button_y, button_width, button_height), width=2)
-    font = pygame.font.Font(None, 36)
-    text = font.render("Start Game", True, WHITE)
-    text_rect = text.get_rect(center=(button_x + button_width // 2, button_y + button_height // 2,))
-    screen.blit(text, text_rect)
+    """Draws the menu with title, leaderboard, username input, and start/load buttons"""
+    screen.fill(BACKGROUND_COLOR)
+    
+    # Title
+    title_font = pygame.font.Font(None, 48)
+    title_text = title_font.render("Fort Yukon", True, TURQUOISE)
+    screen.blit(title_text, (SCREEN_WIDTH // 2 - 100, 10))
+    
+    # Leaderboard
+    leaderboard = load_leaderboard()
+    small_font = pygame.font.Font(None, 20)
+    
+    leaderboard_title = small_font.render("Leaderboard:", True, YELLOW)
+    screen.blit(leaderboard_title, (10, 70))
+    
+    for idx, score in enumerate(leaderboard[:5]):
+        username = score.get('username', 'Player')
+        score_text = small_font.render(f"{idx+1}. {username}: {score['enemies_defeated']} enemies (Diff: {score['difficulty']:.1f})", True, WHITE)
+        screen.blit(score_text, (10, 90 + idx * 25))
+    
+    # Username input
+    username_label = small_font.render("Username:", True, WHITE)
+    screen.blit(username_label, (SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT - 150))
+    
+    # Username input box
+    input_width = 200
+    input_height = 30
+    input_x = SCREEN_WIDTH // 2 - 50
+    input_y = SCREEN_HEIGHT - 140
+    border_color = TURQUOISE if input_active else WHITE
+    pygame.draw.rect(screen, border_color, (input_x, input_y, input_width, input_height), width=2)
+    
+    # Username text
+    username_display = PLAYER["NAME"]
+    if input_active and pygame.time.get_ticks() % 1000 < 500:  # Blinking cursor
+        username_display += "|"
+    username_text = small_font.render(username_display, True, WHITE)
+    screen.blit(username_text, (input_x + 5, input_y + 5))
+    
+    # Start Game button (like the old style)
+    button_width = 150
+    button_height = 40
+    button_x1 = SCREEN_WIDTH // 2 - 160
+    button_y = SCREEN_HEIGHT - 80
+    pygame.draw.rect(screen, WHITE, (button_x1, button_y, button_width, button_height), width=2)
+    font = pygame.font.Font(None, 24)
+    start_text = font.render("Start Game", True, WHITE)
+    screen.blit(start_text, (button_x1 + 20, button_y + 8))
+    
+    # Load Game button (like the old style)
+    button_x2 = SCREEN_WIDTH // 2 + 10
+    pygame.draw.rect(screen, WHITE, (button_x2, button_y, button_width, button_height), width=2)
+    load_text = font.render("Load Game", True, WHITE)
+    screen.blit(load_text, (button_x2 + 20, button_y + 8))
+
+def draw_menu():
+    """Displays the menu - all interaction handling is done in main.py"""
+    draw_start_game_button()
+    pygame.display.flip()
+    
+    # Check for quit event
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            return "quit"
+    
+    return False
 
 def draw_border():
     """Draw a rectangle in a rectangle as a border in game window (rectangle outline)"""
@@ -463,7 +579,7 @@ def player_attack():
 
 def finish_player_attack(damage_multiplier, accuracy_text):
     """Complete the attack after aiming"""
-    global message, enemy_turn, player_turn, aim_active, difficulty, enemy_attack_delay
+    global message, enemy_turn, player_turn, aim_active, difficulty, enemy_attack_delay, enemies_defeated
     aim_active = False
     
     if enemies:
@@ -474,6 +590,8 @@ def finish_player_attack(damage_multiplier, accuracy_text):
         
         if enemies[0].hp <= 0:
             message = f"Defeated {enemies[0].name}!"
+            enemies_defeated += 1  # Increment counter
+            save_game()  # Save progress
             enemies.pop(0)
             # Spawn new enemy at a random map location and return to exploration
             enemies.append(spawn_enemy_random())
@@ -678,6 +796,10 @@ def draw():
     display_hp = max(0, PLAYER['HP'])  # Don't show negative HP
     hp_text = font.render(f"HP: {display_hp}/{PLAYER['MAX_HP']}", True, WHITE)
     screen.blit(hp_text, (10, 10))
+    
+    # Draw enemies defeated counter
+    defeated_text = font.render(f"Enemies Defeated: {enemies_defeated}", True, YELLOW)
+    screen.blit(defeated_text, (10, 35))
     
     if game_state["state"] == BATTLE:
         if not player_turn:
